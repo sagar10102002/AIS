@@ -1,6 +1,5 @@
 # streamlit_ais_app.py
 # Professional Streamlit UI for AIS dataset + vessel classifier & speed predictor
-# Place this file next to your data and model files or upload via the sidebar.
 
 import streamlit as st
 import pandas as pd
@@ -21,22 +20,44 @@ def load_csv(path):
     return pd.read_csv(path)
 
 @st.cache_resource(show_spinner=False)
-def load_model(path):
-    try:
-        return joblib.load(path)
-    except Exception as e:
-        # try pickle as fallback
-        import pickle
-        with open(path, 'rb') as f:
-            return pickle.load(f)
+def load_model(source):
+    """
+    Load a model from a file path, file-like object, or raw bytes.
+    Supports joblib and pickle formats.
+    """
+    import pickle
 
+    try:
+        if isinstance(source, (str, os.PathLike)) and os.path.exists(source):
+            return joblib.load(source)  # File path
+        elif hasattr(source, "read"):
+            model_bytes = source.read()  # Uploaded file-like object
+            return joblib.load(io.BytesIO(model_bytes))
+        elif isinstance(source, (bytes, bytearray)):
+            return joblib.load(io.BytesIO(source))  # Raw bytes
+        else:
+            raise ValueError("Unsupported model source type.")
+    except Exception as e:
+        # Try pickle as fallback
+        try:
+            if hasattr(source, "read"):
+                model_bytes = source.read()
+                return pickle.loads(model_bytes)
+            elif isinstance(source, (bytes, bytearray)):
+                return pickle.loads(source)
+            elif isinstance(source, (str, os.PathLike)) and os.path.exists(source):
+                with open(source, "rb") as f:
+                    return pickle.load(f)
+            else:
+                raise e
+        except Exception as e2:
+            raise RuntimeError(f"Model loading failed: {e2}")
 
 def to_csv_download(df, name="export.csv"):
     csv = df.to_csv(index=False)
     b64 = base64.b64encode(csv.encode()).decode()
     href = f"data:file/csv;base64,{b64}"
     return href
-
 
 # ----------------------- App UI & Layout ----------------------------------
 
@@ -46,7 +67,7 @@ st.set_page_config(page_title="AIS Explorer — Tech UI", layout="wide", page_ic
 st.markdown(
     """
     <style>
-    .stApp { background: #ffff); color: #cbd5e1; }
+    .stApp { background: (#ffffff); color: #cbd5e1; }
     .sidebar .sidebar-content { background: #020617; }
     .card { background: rgba(255,255,255,0.02); padding:12px; border-radius:12px; box-shadow: 0 6px 18px rgba(2,6,23,0.6); }
     .small-muted { color:#94a3b8; font-size:12px }
@@ -58,10 +79,10 @@ st.markdown(
 # Header
 col1, col2 = st.columns([0.7, 0.3])
 with col1:
-    st.markdown("# 🚢 AIS Explorer — Vessel Type & Speed Prediction")
-    st.markdown("<div class='small-muted'>Interactive dashboard to explore AIS data, run vessel-type and speed predictions, visualize tracks and export results.</div>", unsafe_allow_html=True)
+    st.markdown("# 🚢 AIS Explorer")
+    st.markdown("<div class='small-muted'><h4>Interactive dashboard to explore AIS data, run vessel-type and speed predictions, visualize tracks and export results.</h4></div>", unsafe_allow_html=True)
 with col2:
-    st.image("https://images.unsplash.com/photo-1507525428034-b723cf961d3e?q=80&w=400&auto=format&fit=crop&ixlib=rb-4.0.3&s=4a4e3a86892a7fe7a7f6fbf3a8f1f2d1", width=160)
+    st.image("logo.png", width=200)
 
 st.markdown("---")
 
@@ -116,20 +137,18 @@ try:
     if isinstance(csv_path, str):
         df = load_csv(csv_path)
     else:
-        # uploaded file-like object
-        df = pd.read_csv(csv_path)
+        df = pd.read_csv(csv_path)  # uploaded file-like object
 except Exception as e:
     st.error(f"Failed to load CSV: {e}")
     st.stop()
 
-# Quick data cleaning hints
 st.sidebar.markdown(f"**Rows:** {len(df):,}  —  **Columns:** {df.shape[1]}")
 
 # Ensure latitude & longitude exist
 if not any(col.lower() in ["lat","latitude"] for col in df.columns) or not any(col.lower() in ["lon","lng","longitude"] for col in df.columns):
     st.warning("CSV doesn't contain clear latitude/longitude columns. UI will still show data table. Rename columns to 'lat' and 'lon' or 'latitude'/'longitude' for mapping features.")
 
-# Show top KPIs
+# KPIs
 k1, k2, k3, k4 = st.columns(4)
 with k1:
     st.metric("Total AIS points", f"{len(df):,}")
@@ -143,14 +162,14 @@ with k4:
 
 st.markdown("---")
 
-# Main tabs
+# Tabs
 tab1, tab2, tab3, tab4 = st.tabs(["Explore Data", "Map & Tracks", "Predict & Export", "Embed History Map"])
 
 with tab1:
     st.subheader("Explore Data")
     c1, c2 = st.columns([2,1])
     with c1:
-        st.dataframe(df.head(500))
+        st.dataframe(df)
     with c2:
         st.markdown("#### Quick Plots")
         numeric = df.select_dtypes(include=[np.number])
@@ -163,17 +182,13 @@ with tab1:
 
 with tab2:
     st.subheader("Map & Tracks")
-
-    # find lat/lon columns
     lat_cols = [c for c in df.columns if c.lower() in ('lat','latitude')]
     lon_cols = [c for c in df.columns if c.lower() in ('lon','lng','longitude')]
     if lat_cols and lon_cols:
         lat_col = lat_cols[0]
         lon_col = lon_cols[0]
-
         st.markdown("**Interactive deck.gl map**")
         midpoint = (float(df[lat_col].median()), float(df[lon_col].median()))
-
         layer = pdk.Layer(
             "ScatterplotLayer",
             data=df.dropna(subset=[lat_col, lon_col]),
@@ -182,12 +197,10 @@ with tab2:
             pickable=True,
             opacity=0.6,
         )
-
         view_state = pdk.ViewState(latitude=midpoint[0], longitude=midpoint[1], zoom=3, pitch=0)
         r = pdk.Deck(layers=[layer], initial_view_state=view_state, map_style='mapbox://styles/mapbox/dark-v10')
         st.pydeck_chart(r)
 
-        st.markdown("**Select a vessel (MMSI) to show its recent track**")
         if 'MMSI' in df.columns:
             mmsi = st.selectbox("MMSI", options=sorted(df['MMSI'].unique().tolist()), index=0)
             vessel_df = df[df['MMSI'] == mmsi].sort_values(by=df.columns[0])
@@ -199,22 +212,17 @@ with tab2:
         else:
             st.info("Column 'MMSI' not found in dataset — map shows raw points.")
     else:
-        st.warning("Latitude/Longitude columns not detected. Please upload a CSV with lat/lon columns named 'lat'/'lon' or 'latitude'/'longitude'.")
+        st.warning("Latitude/Longitude columns not detected. Please upload a CSV with correct naming.")
 
 with tab3:
     st.subheader("Predict & Export")
-    st.markdown("Use pre-trained models to predict vessel type and/or speed and append results to the dataset.")
-
     colA, colB = st.columns(2)
+
     with colA:
         st.markdown("**Vessel Type Model**")
         if vessel_model_path is not None:
             try:
-                if hasattr(vessel_model_path, 'read'):
-                    model_bytes = vessel_model_path.read()
-                    vessel_model = joblib.loads(model_bytes)
-                else:
-                    vessel_model = load_model(vessel_model_path)
+                vessel_model = load_model(vessel_model_path)
                 st.success("Vessel model loaded")
                 run_vessel = st.button("Run vessel-type prediction")
             except Exception as e:
@@ -230,11 +238,7 @@ with tab3:
         st.markdown("**Speed Model**")
         if speed_model_path is not None:
             try:
-                if hasattr(speed_model_path, 'read'):
-                    model_bytes = speed_model_path.read()
-                    speed_model = joblib.loads(model_bytes)
-                else:
-                    speed_model = load_model(speed_model_path)
+                speed_model = load_model(speed_model_path)
                 st.success("Speed model loaded")
                 run_speed = st.button("Run speed prediction")
             except Exception as e:
@@ -246,14 +250,13 @@ with tab3:
             speed_model = None
             run_speed = False
 
-    # Prediction logic (very generic — assumes the model expects some subset of columns)
     if run_vessel and vessel_model is not None:
         st.info("Running vessel-type predictions...")
         try:
             features = df.select_dtypes(include=[np.number]).fillna(0)
             preds = vessel_model.predict(features)
             df['pred_vessel_type'] = preds
-            st.success("Vessel-type predictions added as 'pred_vessel_type'.")
+            st.success("Vessel-type predictions added.")
         except Exception as e:
             st.error(f"Prediction failed: {e}")
 
@@ -263,7 +266,7 @@ with tab3:
             features = df.select_dtypes(include=[np.number]).fillna(0)
             preds = speed_model.predict(features)
             df['pred_speed'] = preds
-            st.success("Speed predictions added as 'pred_speed'.")
+            st.success("Speed predictions added.")
         except Exception as e:
             st.error(f"Prediction failed: {e}")
 
@@ -275,14 +278,10 @@ with tab3:
 with tab4:
     st.subheader("Embedded History Map (his_map.html)")
     if map_path is not None:
-        st.markdown("This will embed the provided `his_map.html` file (static interactive map).")
         try:
             if hasattr(map_path, 'read'):
                 html_bytes = map_path.read()
-                if isinstance(html_bytes, bytes):
-                    html = html_bytes.decode('utf-8')
-                else:
-                    html = html_bytes
+                html = html_bytes.decode('utf-8') if isinstance(html_bytes, bytes) else html_bytes
             else:
                 with open(map_path, 'r', encoding='utf8') as f:
                     html = f.read()
@@ -290,7 +289,4 @@ with tab4:
         except Exception as e:
             st.error(f"Failed to embed his_map.html: {e}")
     else:
-        st.info("No his_map.html found. Upload via the sidebar or place it at /mnt/data/his_map.html")
-
-st.markdown("---")
-st.caption("Built with ❤️ — Streamlit | Drop your files in the sidebar to override defaults.")
+        st.info("No his_map.html found.")
